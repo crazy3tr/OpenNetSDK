@@ -35,6 +35,8 @@ Following the deprecation of Internet Explorer and ActiveX controls (`WebCtrl.oc
   - Configure recording schedules, video resolution (1080N/720P/D1), and bitrate.
   - Remote system reboot and maintenance.
 - **Smart Incremental Backup:** Automatically skips existing verified video files.
+- **Reliable Long-Stream Archiving:** Built-in background KeepAlive watchdog prevents the ~47 MB DVR inactivity timeout, enabling multi-gigabyte continuous downloads without stream truncation.
+- **Hardware Playback Slot Protection:** Mutex-synchronized streaming prevents hardware lockouts on single-playback embedded DVR SoCs.
 - **Zero-Dependency Mode:** Connect, authenticate, query, and download using standard TCP sockets without external binaries.
 
 ---
@@ -76,7 +78,7 @@ if client.connect("admin", "password"):
     files = client.search_files(channel=0, year=2026, month=10, day=13)
     print(f"Found {len(files)} recording segments on Channel 1.")
 
-    # 5. Download Recording Directly from Hard Drive
+    # 5. Download Recording Directly from Hard Drive (Auto-Keepalive enabled)
     if files:
         target = files[0]
         print(f"Downloading: {target.remote_path} ({target.size_mb:.1f} MB)...")
@@ -85,6 +87,12 @@ if client.connect("admin", "password"):
             "channel1_segment.h264",
             progress_callback=lambda pct, b, spd: print(f"\rProgress: {pct}% | Speed: {spd:.2f} MB/s", end="")
         )
+        
+        # 6. Lossless Remux to Standard MP4
+        from python.pure_dvr_client import convert_to_mp4
+        convert_to_mp4("channel1_segment.h264", "channel1_segment.mp4")
+        print("\nDownloaded and remuxed successfully!")
+        
     client.close()
 ```
 

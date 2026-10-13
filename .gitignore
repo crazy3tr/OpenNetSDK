@@ -8,6 +8,8 @@ obj/
 *.suo
 .vs/
 .idea/
+__pycache__/
+*.pyc
 
 # Large Media / Video Captures
 *.h264

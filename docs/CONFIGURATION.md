@@ -37,23 +37,26 @@ This document specifies how to programmatically control every setting and hardwa
 
 ## 2. Channel Titles (Camera Names & OSD)
 
-### A. Query Channel Names (`ChannelTitle`, Type 1046)
-- **Request Type:** `1046`
-- **Request Payload:** `{"Name": "ChannelTitle", "SessionID": "0x<SESSION_ID>"}\n\0`
-- **Response JSON:**
-  ```json
-  {
-    "ChannelTitle": [
-      "GIRIS-Ç",
-      "CAM02",
-      "CAM03",
-      "CAM04"
-    ],
-    "Ret": 100
-  }
-  ```
+### A. Query Channel Names (`ChannelTitle`, Type 1046 / Binary Type 1048)
+- **JSON Method (Type 1046):**
+  - **Request Payload:** `{"Name": "ChannelTitle", "SessionID": "0x<SESSION_ID>"}\n\0`
+  - **Response JSON:**
+    ```json
+    {
+      "ChannelTitle": [
+        "Front Door",
+        "CAM02",
+        "CAM03",
+        "CAM04"
+      ],
+      "Ret": 100
+    }
+    ```
+- **Binary Fallback (Type 1048):**
+  - On firmwares where Type 1046 is unsupported or returns empty, query Type `1048`.
+  - The DVR responds with a binary blob containing fixed **64-byte null-padded slots** for each channel title.
 
-### B. Update Channel Name (`ChannelTitle`, Type 1046)
+### B. Update Channel Names (`ChannelTitle`, Type 1046)
 - **Request Type:** `1046`
 - **Request Payload:**
   ```json
@@ -61,10 +64,10 @@ This document specifies how to programmatically control every setting and hardwa
     "Name": "ChannelTitle",
     "SessionID": "0x<SESSION_ID>",
     "ChannelTitle": [
-      "KASA",
-      "DEPO",
-      "GIRIS",
-      "OTOPARK"
+      "Front Entrance",
+      "Warehouse",
+      "Office",
+      "Parking Lot"
     ]
   }
   ```
