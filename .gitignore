@@ -1,0 +1,32 @@
+# Build Outputs
+bin/
+obj/
+*.exe
+*.dll.config
+*.pdb
+*.user
+*.suo
+.vs/
+.idea/
+
+# Large Media / Video Captures
+*.h264
+*.mp4
+*.mkv
+*.avi
+*.jpg
+*.jpeg
+*.png
+kayitlar/
+recordings/
+downloads/
+
+# Logs & Temp
+*.log
+*.tmp
+temp/
+scratch/
+
+# Sensitive
+credentials.json
+secrets.env
