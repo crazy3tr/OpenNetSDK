@@ -303,16 +303,20 @@ class PureDvrClient:
                 except Exception:
                     pass
 
-            if progress_callback and target_size:
-                progress_callback(100, total_downloaded, (total_downloaded / (1024*1024)) / max(0.001, time.time() - t0))
-
             # Allow up to 2KB rounding margin on DVR size reporting (since firmware rounds up to whole KB)
             min_expected = max(0, target_size - 2048) if target_size else 0
             if min_expected > 0:
                 if ka_error and total_downloaded < min_expected:
-                    return False
-                return total_downloaded >= min_expected
-            return total_downloaded > 0 and not ka_error
+                    success = False
+                else:
+                    success = total_downloaded >= min_expected
+            else:
+                success = total_downloaded > 0 and not ka_error
+
+            if success and progress_callback and target_size:
+                progress_callback(100, total_downloaded, (total_downloaded / (1024*1024)) / max(0.001, time.time() - t0))
+
+            return success
 
     def get_time(self) -> dict:
         """Queries the current system time from the DVR RTC."""
@@ -361,7 +365,7 @@ class PureDvrClient:
         except Exception:
             pass
 
-        # Attempt 2: Binary Config fallback (Type 1048, 64-byte aligned slot names)
+        # Attempt 2: Fallback (Type 1048: handles either JSON response or 64-byte binary slots)
         try:
             with self._ctrl_lock:
                 self.ctrl_sock.settimeout(4.0)
@@ -370,6 +374,19 @@ class PureDvrClient:
                 hdr = self._recv_exact(self.ctrl_sock, 20)
                 _, _, _, _, _, _, _, plen = NetSdkPacket.unpack_header(hdr)
                 resp = self._recv_exact(self.ctrl_sock, plen)
+
+                # Check if device answered 1048 with JSON first
+                trimmed = resp.strip(b'\x00\r\n\t ')
+                if trimmed.startswith(b'{'):
+                    try:
+                        data = json.loads(trimmed.decode('utf-8', errors='replace'))
+                        json_titles = data.get("ChannelTitle", [])
+                        if json_titles:
+                            return json_titles
+                    except Exception:
+                        pass
+
+                # Fallback to 64-byte aligned binary slots
                 for offset in range(16, plen, 64):
                     raw_str = resp[offset:offset+64].split(b'\x00', 1)[0]
                     decoded = raw_str.decode('utf-8', errors='ignore').strip()

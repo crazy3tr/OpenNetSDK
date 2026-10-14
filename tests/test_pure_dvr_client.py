@@ -162,5 +162,53 @@ class TestPureDvrClient(unittest.TestCase):
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
 
+    @patch('socket.socket')
+    def test_download_file_failure_does_not_call_progress_100(self, mock_sock_cls):
+        client = PureDvrClient("192.168.1.100", 34567)
+        dl_resp = NetSdkPacket.pack(NetSdkPacket.TYPE_DOWNLOAD_RESP, b"\x00"*16, session_id=0x55AA)
+        ka_resp = NetSdkPacket.pack(NetSdkPacket.TYPE_KEEPALIVE_RESP, b"\x00"*16, session_id=0x55AA)
+        client.ctrl_sock = MockSocket(dl_resp + (ka_resp * 10))
+
+        # Target size 100 KB, but socket only returns 10 KB then disconnects
+        partial_stream = b"X" * 10240
+        data_chunk_pkt = NetSdkPacket.pack(NetSdkPacket.TYPE_DATA_CHUNK, partial_stream, session_id=0x55AA)
+        claim_resp = NetSdkPacket.pack(NetSdkPacket.TYPE_CLAIM_RESP, b"\x00"*16, session_id=0x55AA)
+
+        data_sock = MockSocket(claim_resp + data_chunk_pkt)
+        mock_sock_cls.return_value = data_sock
+
+        rec = RecordFile(channel=0, size_kb=100, remote_path="/idea0/test.h264", st_raw=b"", et_raw=b"")
+
+        progress_calls = []
+        def cb(pct, total, speed):
+            progress_calls.append(pct)
+
+        with tempfile.NamedTemporaryFile(delete=False) as tmp:
+            tmp_path = tmp.name
+
+        try:
+            ok = client.download_file(rec, tmp_path, progress_callback=cb)
+            self.assertFalse(ok)
+            self.assertNotIn(100, progress_calls)
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
+    def test_get_channel_titles_1048_json_fallback(self):
+        client = PureDvrClient("192.168.1.100", 34567)
+        client.session_id = 0x55AA
+
+        # Attempt 1 (1042): returns empty or broken packet
+        broken_1042 = NetSdkPacket.pack(1043, b"", session_id=0x55AA, seq=12)
+
+        # Attempt 2 (1048): returns JSON response with ChannelTitle
+        json_1048 = json.dumps({"Name": "ChannelTitle", "ChannelTitle": ["Front Door", "Warehouse"], "Ret": 100}).encode('utf-8')
+        resp_1048 = NetSdkPacket.pack(1049, json_1048 + b'\n\x00', session_id=0x55AA, seq=13)
+
+        client.ctrl_sock = MockSocket(broken_1042 + resp_1048)
+        titles = client.get_channel_titles()
+
+        self.assertEqual(titles, ["Front Door", "Warehouse"])
+
 if __name__ == '__main__':
     unittest.main()
