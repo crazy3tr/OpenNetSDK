@@ -13,7 +13,7 @@ namespace DvrBackupTool
         static string pass = "";
         static int channel = 1;
         static string mode = "download";
-        static string outDir = @"kayitlar";
+        static string outDir = @"recordings";
         static int days = 1;
         static DateTime? startDate = null;
         static DateTime? endDate = null;
@@ -37,7 +37,7 @@ namespace DvrBackupTool
             Console.WriteLine("  --end <YYYY-MM-DD>       End date range");
             Console.WriteLine("  --after <HH:mm:ss>       Only process recordings ending after this time");
             Console.WriteLine("  --latest <N>             Only process the last N recording segments");
-            Console.WriteLine("  --out <directory>        Output directory (default: kayitlar)");
+            Console.WriteLine("  --out <directory>        Output directory (default: recordings)");
             Console.WriteLine("  --keep-raw               Keep .h264 raw stream after MP4 conversion");
             Console.WriteLine("  --ip <ip>                DVR IP address (default: 192.168.1.100)");
             Console.WriteLine("  --port <port>            DVR Port (default: 34567)");
@@ -57,13 +57,13 @@ namespace DvrBackupTool
                 else if (arg == "--days" && i + 1 < args.Length) days = int.Parse(args[++i]);
                 else if (arg == "--date" && i + 1 < args.Length)
                 {
-                    DateTime d = DateTime.Parse(args[++i]);
+                    DateTime d = DateTime.Parse(args[++i], System.Globalization.CultureInfo.InvariantCulture);
                     startDate = d;
                     endDate = d;
                 }
-                else if (arg == "--start" && i + 1 < args.Length) startDate = DateTime.Parse(args[++i]);
-                else if (arg == "--end" && i + 1 < args.Length) endDate = DateTime.Parse(args[++i]);
-                else if (arg == "--after" && i + 1 < args.Length) timeAfter = TimeSpan.Parse(args[++i]);
+                else if (arg == "--start" && i + 1 < args.Length) startDate = DateTime.Parse(args[++i], System.Globalization.CultureInfo.InvariantCulture);
+                else if (arg == "--end" && i + 1 < args.Length) endDate = DateTime.Parse(args[++i], System.Globalization.CultureInfo.InvariantCulture);
+                else if (arg == "--after" && i + 1 < args.Length) timeAfter = TimeSpan.Parse(args[++i], System.Globalization.CultureInfo.InvariantCulture);
                 else if (arg == "--latest" && i + 1 < args.Length) latestCount = int.Parse(args[++i]);
                 else if (arg == "--out" && i + 1 < args.Length) outDir = args[++i];
                 else if (arg == "--keep-raw") keepRaw = true;
@@ -92,7 +92,7 @@ namespace DvrBackupTool
 
                 Console.WriteLine("[OK] Connected! Session ID: {0}", client.SessionId);
 
-                DateTime today = new DateTime(2026, 10, 13);
+                DateTime today = DateTime.Today;
                 DateTime sDate = startDate ?? today.AddDays(-(days - 1));
                 DateTime eDate = endDate ?? today;
 

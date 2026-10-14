@@ -19,8 +19,8 @@ namespace NetDvrSdk
         private static bool _initialized = false;
         private static readonly object _initLock = new object();
 
-        public bool IsConnected => _loginId > 0;
-        public int SessionId => _loginId;
+        public bool IsConnected { get { return _loginId > 0; } }
+        public int SessionId { get { return _loginId; } }
 
         public DvrClient()
         {
@@ -125,14 +125,57 @@ namespace NetDvrSdk
                         DateTime ed = date;
                         string trig = "R";
 
-                        Match m = Regex.Match(remotePath, @"(\d{2})\.(\d{2})\.(\d{2})-(\d{2})\.(\d{2})\.(\d{2})\[([A-Z])\]");
+                        // 1. Read binary SDK_SYSTEM_TIME structs from rawRec (offsets 116 and 140)
+                        try
+                        {
+                            if (rawRec.Length >= 164)
+                            {
+                                int sy = BitConverter.ToInt32(rawRec, 116);
+                                int sm = BitConverter.ToInt32(rawRec, 120);
+                                int sd = BitConverter.ToInt32(rawRec, 124);
+                                int sh = BitConverter.ToInt32(rawRec, 128);
+                                int smn = BitConverter.ToInt32(rawRec, 132);
+                                int ss = BitConverter.ToInt32(rawRec, 136);
+
+                                int ey = BitConverter.ToInt32(rawRec, 140);
+                                int em = BitConverter.ToInt32(rawRec, 144);
+                                int eday = BitConverter.ToInt32(rawRec, 148);
+                                int eh = BitConverter.ToInt32(rawRec, 152);
+                                int emn = BitConverter.ToInt32(rawRec, 156);
+                                int es = BitConverter.ToInt32(rawRec, 160);
+
+                                if (sy >= 2000 && sy <= 2099 && sm >= 1 && sm <= 12 && sd >= 1 && sd <= 31 &&
+                                    sh >= 0 && sh <= 23 && smn >= 0 && smn <= 59 && ss >= 0 && ss <= 59)
+                                {
+                                    st = new DateTime(sy, sm, sd, sh, smn, ss);
+                                }
+                                if (ey >= 2000 && ey <= 2099 && em >= 1 && em <= 12 && eday >= 1 && eday <= 31 &&
+                                    eh >= 0 && eh <= 23 && emn >= 0 && emn <= 59 && es >= 0 && es <= 59)
+                                {
+                                    ed = new DateTime(ey, em, eday, eh, emn, es);
+                                }
+                            }
+                        }
+                        catch { }
+
+                        // 2. Regex fallback / trigger extraction from filename
+                        Match m = Regex.Match(remotePath, @"(\d{2})\.(\d{2})\.(\d{2})-(\d{2})\.(\d{2})\.(\d{2})(?:\[([A-Za-z0-9])\])?");
                         if (m.Success)
                         {
-                            st = new DateTime(date.Year, date.Month, date.Day,
-                                int.Parse(m.Groups[1].Value), int.Parse(m.Groups[2].Value), int.Parse(m.Groups[3].Value));
-                            ed = new DateTime(date.Year, date.Month, date.Day,
-                                int.Parse(m.Groups[4].Value), int.Parse(m.Groups[5].Value), int.Parse(m.Groups[6].Value));
-                            trig = m.Groups[7].Value;
+                            if (st == date)
+                            {
+                                st = new DateTime(date.Year, date.Month, date.Day,
+                                    int.Parse(m.Groups[1].Value), int.Parse(m.Groups[2].Value), int.Parse(m.Groups[3].Value));
+                            }
+                            if (ed == date)
+                            {
+                                ed = new DateTime(date.Year, date.Month, date.Day,
+                                    int.Parse(m.Groups[4].Value), int.Parse(m.Groups[5].Value), int.Parse(m.Groups[6].Value));
+                            }
+                            if (m.Groups[7].Success && !string.IsNullOrEmpty(m.Groups[7].Value))
+                            {
+                                trig = m.Groups[7].Value;
+                            }
                         }
 
                         list.Add(new DvrRecordFile
@@ -188,31 +231,36 @@ namespace NetDvrSdk
                 DateTime startTime = DateTime.Now;
                 DateTime lastProgressTime = DateTime.Now;
                 int lastPos = -1;
+                long lastSize = -1;
 
                 while ((DateTime.Now - startTime).TotalSeconds < timeoutSeconds)
                 {
                     int pos = NativeMethods.NET_SDK_GetDownloadPos(hDown);
                     long currentSize = File.Exists(localRawPath) ? new FileInfo(localRawPath).Length : 0;
 
-                    if (pos != lastPos)
+                    if (pos != lastPos || currentSize != lastSize)
                     {
                         lastProgressTime = DateTime.Now;
                         lastPos = pos;
+                        lastSize = currentSize;
                         double elapsed = (DateTime.Now - startTime).TotalSeconds;
                         double speed = (elapsed > 0) ? (currentSize / (1024.0 * 1024.0)) / elapsed : 0;
 
-                        progressCallback?.Invoke(new DvrDownloadProgress
+                        if (progressCallback != null)
                         {
-                            Percentage = pos,
-                            BytesDownloaded = currentSize,
-                            SpeedMBs = speed
-                        });
+                            progressCallback(new DvrDownloadProgress
+                            {
+                                Percentage = pos,
+                                BytesDownloaded = currentSize,
+                                SpeedMBs = speed
+                            });
+                        }
                     }
 
                     if (pos >= 100) return true;
                     if (pos < 0) return false;
 
-                    // Stall detection (no progress for 45s)
+                    // Stall detection (no percentage change and no byte growth for 45s)
                     if ((DateTime.Now - lastProgressTime).TotalSeconds > 45) return false;
 
                     Thread.Sleep(300);
@@ -235,16 +283,23 @@ namespace NetDvrSdk
                 var psi = new ProcessStartInfo
                 {
                     FileName = ffmpegPath,
-                    Arguments = string.Format("-y -r 25 -i \"{0}\" -c copy \"{1}\"", inputRawH264, outputMp4),
+                    Arguments = string.Format(System.Globalization.CultureInfo.InvariantCulture,
+                        "-y -loglevel error -nostats -r 25 -i \"{0}\" -c copy \"{1}\"", inputRawH264, outputMp4),
                     UseShellExecute = false,
                     CreateNoWindow = true,
                     RedirectStandardError = true,
-                    RedirectStandardOutput = true
+                    RedirectStandardOutput = false
                 };
 
                 using (var p = Process.Start(psi))
                 {
-                    p.WaitForExit(60000);
+                    string stderr = p.StandardError.ReadToEnd();
+                    bool exited = p.WaitForExit(60000);
+                    if (!exited)
+                    {
+                        try { p.Kill(); } catch { }
+                        return false;
+                    }
                     return p.ExitCode == 0 && File.Exists(outputMp4) && new FileInfo(outputMp4).Length > 1024;
                 }
             }

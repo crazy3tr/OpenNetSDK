@@ -74,8 +74,8 @@ if client.connect("admin", "password"):
     # 3. Synchronize Time
     # client.set_time("2026-10-13 18:30:00")
 
-    # 4. Search Channel 1 Recordings for a Specific Date
-    files = client.search_files(channel=0, year=2026, month=10, day=13)
+    # 4. Search Channel 1 Recordings (Defaults to today, or pass year, month, day)
+    files = client.search_files(channel=0)
     print(f"Found {len(files)} recording segments on Channel 1.")
 
     # 5. Download Recording Directly from Hard Drive (Auto-Keepalive enabled)
@@ -141,17 +141,30 @@ class Program
 
 ## 🛠️ CLI Archiver (`DvrBackup`)
 
-The precompiled backup tool supports single-command backups and cron automation:
+The backup utility supports single-command backups, interactive batch menus, and automated scheduling:
 
 ```powershell
-# List recording catalog for the past 7 days:
-.\DvrBackup.exe --mode list --channel 1 --days 7
+# Build DvrBackup with one click (no Visual Studio required):
+.\build.bat
 
-# Download all recordings after 13:00 today:
-.\DvrBackup.exe --mode download --channel 1 --date 2026-10-13 --after 13:00
+# List recording catalog for the past 7 days:
+.\tools\DvrBackup\DvrBackup.exe --mode list --channel 1 --days 7
+
+# Download the latest 5 recordings from Channel 1:
+.\tools\DvrBackup\DvrBackup.exe --mode download --channel 1 --days 1 --latest 5
 
 # Automated continuous 100-day incremental backup:
-.\DvrBackup.exe --mode download --channel 1 --days 100 --out "D:\CCTV_Backup"
+.\tools\DvrBackup\DvrBackup.exe --mode download --channel 1 --days 100 --out "D:\CCTV_Backup"
+```
+
+---
+
+## 🧪 Unit Tests
+
+Run the test suite using Python's built-in `unittest` runner:
+
+```bash
+python -m unittest discover tests
 ```
 
 ---
@@ -182,12 +195,16 @@ OpenXM-DVR/
 │       ├── DvrModels.cs       # Domain models
 │       ├── NativeMethods.cs   # P/Invoke declarations
 │       └── NetDvrSdk.csproj   # Project file
+├── tests/
+│   └── test_pure_dvr_client.py # Unit test suite
 ├── tools/
 │   └── DvrBackup/             # Automated CLI archiver & batch menu
 │       ├── Program.cs         # CLI archiver source code
+│       ├── DvrBackup.csproj   # CLI project file
 │       └── dvr_backup.bat     # Interactive menu
 ├── native/
-│   └── x86/                   # Native NetSDK dependency binaries
+│   └── x86/                   # Native NetSDK dependency guide (README.md)
+├── build.bat                  # One-click C# compiler script
 ├── .gitignore
 ├── LICENSE                    # MIT License
 └── README.md

@@ -6,6 +6,7 @@ Works across Linux, macOS, Windows, Android (Termux/Kivy), Raspberry Pi.
 Clean-room implementation of the Xiongmai / Sofia / NetSDK binary protocol.
 """
 
+from __future__ import annotations
 import socket
 import struct
 import hashlib
@@ -16,6 +17,7 @@ import time
 import re
 import threading
 import subprocess
+from datetime import datetime
 
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
@@ -51,6 +53,8 @@ class NetSdkPacket:
     TYPE_KEEPALIVE_REQ = 1006
     TYPE_KEEPALIVE_RESP = 1007
     TYPE_STORAGE_INFO_REQ = 1020
+    TYPE_CONFIG_SET = 1040
+    TYPE_CONFIG_GET = 1042
     TYPE_CHANNELTITLE_GET = 1046
     TYPE_CHANNELTITLE_BINARY = 1048
     TYPE_SEARCH_REQ = 1440
@@ -102,6 +106,16 @@ class RecordFile:
             self.date_str = m.group(1)
             self.start_time = m.group(2).replace('.', ':')
             self.end_time = m.group(3).replace('.', ':')
+        elif len(self.st_raw) >= 24 and len(self.et_raw) >= 24:
+            try:
+                sy, sm, sd, sh, smn, ss = struct.unpack('<6i', self.st_raw[:24])
+                ey, em, ed, eh, emn, es = struct.unpack('<6i', self.et_raw[:24])
+                if 2000 <= sy <= 2099 and 1 <= sm <= 12 and 1 <= sd <= 31:
+                    self.date_str = f"{sy:04d}-{sm:02d}-{sd:02d}"
+                    self.start_time = f"{sh:02d}:{smn:02d}:{ss:02d}"
+                    self.end_time = f"{eh:02d}:{emn:02d}:{es:02d}"
+            except Exception:
+                pass
         
     def __repr__(self):
         t_info = f" {self.start_time}-{self.end_time}" if self.start_time else ""
@@ -141,12 +155,18 @@ class PureDvrClient:
                 return True
             return False
 
-    def search_files(self, channel: int = 0, year: int = 2026, month: int = 10, day: int = 13, stride: int = 184) -> list:
+    def search_files(self, channel: int = 0, year: int | None = None, month: int | None = None, day: int | None = None, stride: int = 184) -> list:
         """
         Queries recording records for a specific day.
         Returns list of RecordFile objects.
         Stride defaults to 184 bytes per record struct.
         """
+        if year is None or month is None or day is None:
+            now = datetime.now()
+            year = year if year is not None else now.year
+            month = month if month is not None else now.month
+            day = day if day is not None else now.day
+
         raw_template = bytes.fromhex(
             'c7000000000000000000000000000000683236340000000000000000000000000000000000000000'
             '2a00000000000000000000000000000000000000000000000000000000000000ffff0000'
@@ -227,7 +247,10 @@ class PureDvrClient:
 
             # 3. Background KeepAlive thread on Control Socket (prevents 47 MB timeout)
             stop_ka = threading.Event()
+            ka_error = False
+
             def keepalive_loop():
+                nonlocal ka_error
                 seq_num = 100
                 while not stop_ka.wait(2.0):
                     try:
@@ -243,6 +266,7 @@ class PureDvrClient:
                             self.ctrl_sock.settimeout(None)
                             seq_num += 1
                     except Exception:
+                        ka_error = True
                         break
 
             ka_thread = threading.Thread(target=keepalive_loop, daemon=True)
@@ -279,12 +303,14 @@ class PureDvrClient:
                 except Exception:
                     pass
 
+            if target_size > 0:
+                return total_downloaded >= target_size
             return total_downloaded > 0
 
     def get_time(self) -> dict:
         """Queries the current system time from the DVR RTC."""
         with self._ctrl_lock:
-            payload = json.dumps({"Name": "OPTimeQuery", "SessionID": f"0x{self.session_id:08X}"}).encode('ascii') + b'\n\x00'
+            payload = json.dumps({"Name": "OPTimeQuery", "SessionID": f"0x{self.session_id:08X}"}, ensure_ascii=False).encode('utf-8') + b'\n\x00'
             self.ctrl_sock.settimeout(5.0)
             self.ctrl_sock.sendall(NetSdkPacket.pack(NetSdkPacket.TYPE_TIME_QUERY, payload, self.session_id, 10))
             hdr = self._recv_exact(self.ctrl_sock, 20)
@@ -298,7 +324,7 @@ class PureDvrClient:
     def set_time(self, time_str: str) -> bool:
         """Sets the DVR system clock (format: 'YYYY-MM-DD HH:MM:SS')."""
         with self._ctrl_lock:
-            payload = json.dumps({"Name": "OPTimeSetting", "SessionID": f"0x{self.session_id:08X}", "OPTimeSetting": time_str}).encode('ascii') + b'\n\x00'
+            payload = json.dumps({"Name": "OPTimeSetting", "SessionID": f"0x{self.session_id:08X}", "OPTimeSetting": time_str}, ensure_ascii=False).encode('utf-8') + b'\n\x00'
             self.ctrl_sock.settimeout(5.0)
             self.ctrl_sock.sendall(NetSdkPacket.pack(NetSdkPacket.TYPE_TIME_SETTING, payload, self.session_id, 11))
             hdr = self._recv_exact(self.ctrl_sock, 20)
@@ -309,24 +335,25 @@ class PureDvrClient:
     def get_channel_titles(self) -> list:
         """
         Queries OSD camera channel titles.
-        Tries JSON config query (1046) first, then falls back to binary slot blob (1048).
+        Tries JSON config query (1042 / 1046) first, then falls back to binary slot blob (1048).
         """
         titles = []
-        # Attempt 1: JSON Config (Type 1046)
-        try:
-            with self._ctrl_lock:
-                self.ctrl_sock.settimeout(3.0)
-                payload = json.dumps({"Name": "ChannelTitle", "SessionID": f"0x{self.session_id:08X}"}).encode('ascii') + b'\n\x00'
-                self.ctrl_sock.sendall(NetSdkPacket.pack(NetSdkPacket.TYPE_CHANNELTITLE_GET, payload, self.session_id, 12))
-                hdr = self._recv_exact(self.ctrl_sock, 20)
-                _, _, _, _, _, _, _, plen = NetSdkPacket.unpack_header(hdr)
-                resp = self._recv_exact(self.ctrl_sock, plen)
-                data = json.loads(resp.rstrip(b'\x00\r\n').decode('utf-8', errors='replace'))
-                titles = data.get("ChannelTitle", [])
-                if titles:
-                    return titles
-        except Exception:
-            pass
+        # Attempt 1: JSON Config Query (Try Type 1042 CONFIG_GET, then Type 1046)
+        for pkt_type in (NetSdkPacket.TYPE_CONFIG_GET, NetSdkPacket.TYPE_CHANNELTITLE_GET):
+            try:
+                with self._ctrl_lock:
+                    self.ctrl_sock.settimeout(3.0)
+                    payload = json.dumps({"Name": "ChannelTitle", "SessionID": f"0x{self.session_id:08X}"}, ensure_ascii=False).encode('utf-8') + b'\n\x00'
+                    self.ctrl_sock.sendall(NetSdkPacket.pack(pkt_type, payload, self.session_id, 12))
+                    hdr = self._recv_exact(self.ctrl_sock, 20)
+                    _, _, _, _, _, _, _, plen = NetSdkPacket.unpack_header(hdr)
+                    resp = self._recv_exact(self.ctrl_sock, plen)
+                    data = json.loads(resp.rstrip(b'\x00\r\n').decode('utf-8', errors='replace'))
+                    titles = data.get("ChannelTitle", [])
+                    if titles:
+                        return titles
+            except Exception:
+                pass
 
         # Attempt 2: Binary Config fallback (Type 1048, 64-byte aligned slot names)
         try:
@@ -349,21 +376,28 @@ class PureDvrClient:
 
     def set_channel_titles(self, titles: list) -> bool:
         """Updates OSD camera channel titles."""
-        with self._ctrl_lock:
-            payload = json.dumps({"Name": "ChannelTitle", "SessionID": f"0x{self.session_id:08X}", "ChannelTitle": titles}).encode('ascii') + b'\n\x00'
-            self.ctrl_sock.settimeout(5.0)
-            self.ctrl_sock.sendall(NetSdkPacket.pack(NetSdkPacket.TYPE_CHANNELTITLE_GET, payload, self.session_id, 13))
-            hdr = self._recv_exact(self.ctrl_sock, 20)
-            _, _, _, _, _, _, _, plen = NetSdkPacket.unpack_header(hdr)
-            resp = self._recv_exact(self.ctrl_sock, plen)
-            return b'"Ret": 100' in resp or b'"Ret":100' in resp
+        payload = json.dumps({"Name": "ChannelTitle", "SessionID": f"0x{self.session_id:08X}", "ChannelTitle": titles}, ensure_ascii=False).encode('utf-8') + b'\n\x00'
+        # Try Type 1040 (CONFIG_SET) first, then Type 1046
+        for pkt_type in (NetSdkPacket.TYPE_CONFIG_SET, NetSdkPacket.TYPE_CHANNELTITLE_GET):
+            try:
+                with self._ctrl_lock:
+                    self.ctrl_sock.settimeout(5.0)
+                    self.ctrl_sock.sendall(NetSdkPacket.pack(pkt_type, payload, self.session_id, 13))
+                    hdr = self._recv_exact(self.ctrl_sock, 20)
+                    _, _, _, _, _, _, _, plen = NetSdkPacket.unpack_header(hdr)
+                    resp = self._recv_exact(self.ctrl_sock, plen)
+                    if b'"Ret": 100' in resp or b'"Ret":100' in resp:
+                        return True
+            except Exception:
+                pass
+        return False
 
     def get_storage_info(self) -> list:
         """Queries hard drive partitions, total capacity and remaining free space."""
         try:
             with self._ctrl_lock:
                 self.ctrl_sock.settimeout(4.0)
-                payload = json.dumps({"Name": "StorageInfo", "SessionID": f"0x{self.session_id:08X}"}).encode('ascii') + b'\n\x00'
+                payload = json.dumps({"Name": "StorageInfo", "SessionID": f"0x{self.session_id:08X}"}, ensure_ascii=False).encode('utf-8') + b'\n\x00'
                 self.ctrl_sock.sendall(NetSdkPacket.pack(NetSdkPacket.TYPE_STORAGE_INFO_REQ, payload, self.session_id, 14))
                 hdr = self._recv_exact(self.ctrl_sock, 20)
                 _, _, _, _, _, _, _, plen = NetSdkPacket.unpack_header(hdr)
@@ -376,7 +410,7 @@ class PureDvrClient:
     def reboot(self) -> bool:
         """Remotely reboots the DVR."""
         with self._ctrl_lock:
-            payload = json.dumps({"Name": "OPMachine", "SessionID": f"0x{self.session_id:08X}", "OPMachine": {"Action": "Reboot"}}).encode('ascii') + b'\n\x00'
+            payload = json.dumps({"Name": "OPMachine", "SessionID": f"0x{self.session_id:08X}", "OPMachine": {"Action": "Reboot"}}, ensure_ascii=False).encode('utf-8') + b'\n\x00'
             self.ctrl_sock.settimeout(5.0)
             self.ctrl_sock.sendall(NetSdkPacket.pack(1450, payload, self.session_id, 15))
             hdr = self._recv_exact(self.ctrl_sock, 20)
@@ -425,7 +459,7 @@ if __name__ == '__main__':
         print(f"Storage Info: {storage}\n")
 
         # Test 4: Query Records
-        files = client.search_files(channel=0, year=2026, month=10, day=13)
+        files = client.search_files(channel=0)
         print(f"Found {len(files)} files on Channel 1:")
         for idx, f in enumerate(files[:5]):
             print(f"  [{idx+1:2d}] {f.remote_path} ({f.size_mb:.1f} MB)")
