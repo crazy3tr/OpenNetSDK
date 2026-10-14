@@ -303,9 +303,16 @@ class PureDvrClient:
                 except Exception:
                     pass
 
-            if target_size > 0:
-                return total_downloaded >= target_size
-            return total_downloaded > 0
+            if progress_callback and target_size:
+                progress_callback(100, total_downloaded, (total_downloaded / (1024*1024)) / max(0.001, time.time() - t0))
+
+            # Allow up to 2KB rounding margin on DVR size reporting (since firmware rounds up to whole KB)
+            min_expected = max(0, target_size - 2048) if target_size else 0
+            if min_expected > 0:
+                if ka_error and total_downloaded < min_expected:
+                    return False
+                return total_downloaded >= min_expected
+            return total_downloaded > 0 and not ka_error
 
     def get_time(self) -> dict:
         """Queries the current system time from the DVR RTC."""
@@ -335,30 +342,29 @@ class PureDvrClient:
     def get_channel_titles(self) -> list:
         """
         Queries OSD camera channel titles.
-        Tries JSON config query (1042 / 1046) first, then falls back to binary slot blob (1048).
+        Tries standard JSON config query (1042 CONFIG_GET) first, then falls back to binary slot blob (1048).
         """
         titles = []
-        # Attempt 1: JSON Config Query (Try Type 1042 CONFIG_GET, then Type 1046)
-        for pkt_type in (NetSdkPacket.TYPE_CONFIG_GET, NetSdkPacket.TYPE_CHANNELTITLE_GET):
-            try:
-                with self._ctrl_lock:
-                    self.ctrl_sock.settimeout(3.0)
-                    payload = json.dumps({"Name": "ChannelTitle", "SessionID": f"0x{self.session_id:08X}"}, ensure_ascii=False).encode('utf-8') + b'\n\x00'
-                    self.ctrl_sock.sendall(NetSdkPacket.pack(pkt_type, payload, self.session_id, 12))
-                    hdr = self._recv_exact(self.ctrl_sock, 20)
-                    _, _, _, _, _, _, _, plen = NetSdkPacket.unpack_header(hdr)
-                    resp = self._recv_exact(self.ctrl_sock, plen)
-                    data = json.loads(resp.rstrip(b'\x00\r\n').decode('utf-8', errors='replace'))
-                    titles = data.get("ChannelTitle", [])
-                    if titles:
-                        return titles
-            except Exception:
-                pass
+        # Attempt 1: Standard JSON Config Query (Type 1042 CONFIG_GET)
+        try:
+            with self._ctrl_lock:
+                self.ctrl_sock.settimeout(4.0)
+                payload = json.dumps({"Name": "ChannelTitle", "SessionID": f"0x{self.session_id:08X}"}, ensure_ascii=False).encode('utf-8') + b'\n\x00'
+                self.ctrl_sock.sendall(NetSdkPacket.pack(NetSdkPacket.TYPE_CONFIG_GET, payload, self.session_id, 12))
+                hdr = self._recv_exact(self.ctrl_sock, 20)
+                _, _, _, _, _, _, _, plen = NetSdkPacket.unpack_header(hdr)
+                resp = self._recv_exact(self.ctrl_sock, plen)
+                data = json.loads(resp.rstrip(b'\x00\r\n').decode('utf-8', errors='replace'))
+                titles = data.get("ChannelTitle", [])
+                if titles:
+                    return titles
+        except Exception:
+            pass
 
         # Attempt 2: Binary Config fallback (Type 1048, 64-byte aligned slot names)
         try:
             with self._ctrl_lock:
-                self.ctrl_sock.settimeout(3.0)
+                self.ctrl_sock.settimeout(4.0)
                 req_p = struct.pack('<IIII', self.session_id, 0, 0, 0)
                 self.ctrl_sock.sendall(NetSdkPacket.pack(NetSdkPacket.TYPE_CHANNELTITLE_BINARY, req_p, self.session_id, 13))
                 hdr = self._recv_exact(self.ctrl_sock, 20)
@@ -376,21 +382,17 @@ class PureDvrClient:
 
     def set_channel_titles(self, titles: list) -> bool:
         """Updates OSD camera channel titles."""
-        payload = json.dumps({"Name": "ChannelTitle", "SessionID": f"0x{self.session_id:08X}", "ChannelTitle": titles}, ensure_ascii=False).encode('utf-8') + b'\n\x00'
-        # Try Type 1040 (CONFIG_SET) first, then Type 1046
-        for pkt_type in (NetSdkPacket.TYPE_CONFIG_SET, NetSdkPacket.TYPE_CHANNELTITLE_GET):
+        with self._ctrl_lock:
             try:
-                with self._ctrl_lock:
-                    self.ctrl_sock.settimeout(5.0)
-                    self.ctrl_sock.sendall(NetSdkPacket.pack(pkt_type, payload, self.session_id, 13))
-                    hdr = self._recv_exact(self.ctrl_sock, 20)
-                    _, _, _, _, _, _, _, plen = NetSdkPacket.unpack_header(hdr)
-                    resp = self._recv_exact(self.ctrl_sock, plen)
-                    if b'"Ret": 100' in resp or b'"Ret":100' in resp:
-                        return True
+                payload = json.dumps({"Name": "ChannelTitle", "SessionID": f"0x{self.session_id:08X}", "ChannelTitle": titles}, ensure_ascii=False).encode('utf-8') + b'\n\x00'
+                self.ctrl_sock.settimeout(5.0)
+                self.ctrl_sock.sendall(NetSdkPacket.pack(NetSdkPacket.TYPE_CONFIG_SET, payload, self.session_id, 13))
+                hdr = self._recv_exact(self.ctrl_sock, 20)
+                _, _, _, _, _, _, _, plen = NetSdkPacket.unpack_header(hdr)
+                resp = self._recv_exact(self.ctrl_sock, plen)
+                return b'"Ret": 100' in resp or b'"Ret":100' in resp
             except Exception:
-                pass
-        return False
+                return False
 
     def get_storage_info(self) -> list:
         """Queries hard drive partitions, total capacity and remaining free space."""

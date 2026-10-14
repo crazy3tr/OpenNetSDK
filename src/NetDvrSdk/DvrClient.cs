@@ -291,9 +291,13 @@ namespace NetDvrSdk
                     RedirectStandardOutput = false
                 };
 
-                using (var p = Process.Start(psi))
+                using (var p = new Process())
                 {
-                    string stderr = p.StandardError.ReadToEnd();
+                    p.StartInfo = psi;
+                    p.ErrorDataReceived += (s, e) => { };
+                    p.Start();
+                    p.BeginErrorReadLine();
+
                     bool exited = p.WaitForExit(60000);
                     if (!exited)
                     {

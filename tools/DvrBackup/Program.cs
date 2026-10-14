@@ -179,7 +179,7 @@ namespace DvrBackupTool
                     else
                     {
                         Console.WriteLine("   [WARNING] ffmpeg conversion failed, keeping raw .h264");
-                        downloaded++;
+                        failed++;
                     }
                 }
 
